@@ -1,0 +1,78 @@
+name: Cleanup Repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Apa yang mau dihapus? (all/releases/tags/runs)"
+        required: true
+        default: "all"
+      older_than_days:
+        description: "Hapus yang lebih tua dari X hari (0 = semua)"
+        required: true
+        default: "0"
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run cleanup script
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MODE: ${{ github.event.inputs.mode }}
+          DAYS: ${{ github.event.inputs.older_than_days }}
+        run: |
+          python <<'EOF'
+          import os, requests, datetime
+
+          token = os.getenv("GH_TOKEN")
+          repo = os.getenv("REPO")
+          mode = os.getenv("MODE")
+          days = int(os.getenv("DAYS"))
+
+          headers = {"Authorization": f"Bearer {token}"}
+          cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+
+          def delete_release_assets():
+              r = requests.get(f"https://api.github.com/repos/{repo}/releases", headers=headers).json()
+              for rel in r:
+                  created = datetime.datetime.strptime(rel["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+                  if days == 0 or created < cutoff:
+                      print(f"Deleting release: {rel['tag_name']}")
+                      requests.delete(f"https://api.github.com/repos/{repo}/releases/{rel['id']}", headers=headers)
+
+          def delete_tags():
+              r = requests.get(f"https://api.github.com/repos/{repo}/git/refs/tags", headers=headers).json()
+              for tag in r:
+                  ref = tag["ref"]
+                  print(f"Deleting tag: {ref}")
+                  requests.delete(f"https://api.github.com/repos/{repo}/git/{ref}", headers=headers)
+
+          def delete_runs():
+              r = requests.get(f"https://api.github.com/repos/{repo}/actions/runs", headers=headers).json()
+              for run in r["workflow_runs"]:
+                  created = datetime.datetime.strptime(run["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+                  if days == 0 or created < cutoff:
+                      print(f"Deleting run: {run['id']}")
+                      requests.delete(f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}", headers=headers)
+
+          if mode in ["all", "releases"]:
+              delete_release_assets()
+          if mode in ["all", "tags"]:
+              delete_tags()
+          if mode in ["all", "runs"]:
+              delete_runs()
+          EOF
+          
